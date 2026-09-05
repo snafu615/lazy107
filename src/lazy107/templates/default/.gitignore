@@ -1,0 +1,50 @@
+# Environment
+.venv/
+__pycache__/
+*.egg-info/
+
+# Datasets (large files stay out of git)
+data/
+datasets/
+
+# Training artifacts
+checkpoints/
+models/
+outputs/
+logs/
+
+# Model weights and binary data
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.onnx
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.bin
+*.db
+*.sqlite
+*.parquet
+*.tar
+*.zip
+*.gz
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Tool artifacts
+notes/
+scripts/*.old*
+.pytest-tmp/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS / Windows
+.DS_Store
+Thumbs.db

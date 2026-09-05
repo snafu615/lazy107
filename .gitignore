@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# pytest on Windows (ACL-locked system temp)
+.pytest-tmp/
+.pytest_cache/
+
+# demo captures (cluster output, regenerated via scripts/capture-demos.sh)
+captures/
+
+# Build (wheels + the single-file installer are shipped in dist/)
+dist/*
+!dist/*.whl
+!dist/*-install.sh
+build/
+
+test/
+
+dist/

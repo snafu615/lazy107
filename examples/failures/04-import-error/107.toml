@@ -1,0 +1,8 @@
+entry = "train.py"
+partition = "P107-RTX5090"
+qos = "qos_p107-rtx5090"
+account = "competition"
+gpu = 1
+time = "0:05:00"
+conda_env = "demo"
+job_name = "fail04"

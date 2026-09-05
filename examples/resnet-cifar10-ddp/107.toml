@@ -1,0 +1,12 @@
+# Multi-GPU DDP example: 2 GPUs, doubled CPU/memory, explicit P107 settings.
+# The `demo` conda env is shared with the other examples (created by Demo 02).
+entry = "train.py"
+partition = "P107-RTX5090"
+qos = "qos_p107-rtx5090"
+account = "competition"
+gpu = 2
+cpus = 8
+mem = "32G"
+time = "0:20:00"
+conda_env = "demo"
+job_name = "resnet-ddp"

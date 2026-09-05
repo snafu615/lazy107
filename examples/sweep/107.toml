@@ -1,0 +1,11 @@
+# Job array example: a 4-row hyperparameter sweep, 2 concurrent tasks.
+# The `demo` conda env is shared with the other examples (created by Demo 02).
+entry = "train.py"
+partition = "P107-RTX5090"
+qos = "qos_p107-rtx5090"
+account = "competition"
+gpu = 1
+time = "0:10:00"
+array = "1-4%2"
+conda_env = "demo"
+job_name = "sweep"
