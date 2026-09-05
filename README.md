@@ -1,229 +1,192 @@
 # lazy107
 
-lazy107 is a cluster-side CLI for the USTC 107 computing platform. It detects
-your entry file, infers resources (GPU/CPU/memory/time) from your dependencies,
-prepares a conda environment, generates the sbatch script, submits the job, and
-records every run — no Slurm parameters to memorize, nothing installed locally.
+lazy107 是面向中国科大 107 计算平台的**集群端命令行工具**：自动识别入口文件、
+从依赖推断资源（GPU/CPU/内存/时长）、准备 conda 环境、生成 sbatch 脚本、提交作业并记账。
+不需要背任何 Slurm 参数，本地也无需安装任何东西——全部在登录节点 / Web Shell 上完成。
 
-## Install
+## 它能解决什么问题
 
-The single-file installer needs no network and no repo clone — upload
-`dist/lazy107-0.1.0-install.sh` to the login node and run:
+| 你遇到的问题 | lazy107 的做法 |
+|---|---|
+| `Invalid account or account/partition combination` | `lazy107 discover` 从实时 Slurm 关联解析出你有权使用的 account/partition/QoS，写入用户级配置，一次解决 |
+| 不知道申请多少资源 | 从依赖自动推断（torch/jax/tf → 1 GPU/4 CPU/16G/2h；否则 CPU 档），`everything` 还提供 5 档预设 |
+| 每个项目都要重新配一遍环境 | `lazy107 env` 优先**复用已有 conda 环境**（自动校验依赖是否齐全），缺了才新装 |
+| 作业挂了看不懂日志 | `lazy107 debug <job_id>` 一行给出原因（cause）+ 修法（fix）+ 证据（evidence） |
+| 申请了 GPU 却跑在 CPU 上 | 四道防线保证 GPU 请求永远等于 CUDA（见下） |
+| 多卡 / 调参作业不会写 | 检测到 DDP 代码自动改用 torchrun 启动；`array = "1-4%2"` 一键作业数组 |
+| 忘了自己提交过什么 | 每次提交自动记入 `notes/runs.md`，每条命令记入 `notes/history.md` |
 
-```bash
-bash lazy107-0.1.0-install.sh
-# -> installs into the active conda env; falls back to a dedicated conda
-#    env "lazy107", then a venv at ~/.lazy107
-lazy107 --version
-```
-
-Or install from source (`python >= 3.11` only, no other dependencies):
-
-```bash
-git clone <this-repo> lazy107 && cd lazy107
-python -m pip install -e .          # dev
-# or: python -m pip install dist/lazy107-0.1.0-py3-none-any.whl
-```
-
-## Quick start
+## 快速开始（5 条命令）
 
 ```bash
-# 1. On the 107 login node / Web Shell: one-time platform discovery
-#    (resolves your account/partition/QoS from the live Slurm association)
+# 1. 一次性平台探测：解析你有权使用的 account/partition/QoS
 lazy107 discover --dry-run
 lazy107 discover
 
-# 2. Scaffold a project
+# 2. 脚手架一个新项目（已有项目则直接 cd 进去）
 lazy107 init my-project
 cd my-project
 
-# ... or skip steps 3-4 and run the guided pipeline (env reuse or install,
-# slurm presets, submit):
-lazy107 everything
-
-# 3. Prepare the conda environment (print-only by default; --yes to run)
+# 3. 准备 conda 环境（默认只打印；--yes 才执行）
 lazy107 env --dry-run
+lazy107 env --yes
 
-# 4. See what will be submitted, then submit
+# 4. 查看将提交什么，然后提交
 lazy107 plan
 lazy107 render --dry-run
 lazy107 submit --yes
 
-# 5. Monitor
-lazy107 watch <job_id>     # prints squeue / scontrol / tail commands
-squeue -u $USER
-tail -f logs/train_*.out
-tail -f logs/train_*.err   # tracebacks land here
-
-# 6. Diagnose a failed job
-lazy107 debug <job_id>    # sacct exit code + log signatures -> cause/fix
+# 5. 监控 / 诊断
+lazy107 watch <job_id>
+lazy107 debug <job_id>    # 作业失败时：sacct 退出码 + 日志签名 → 原因/修法
 ```
 
-First time? Read [docs/quickstart.md](docs/quickstart.md). End-to-end worked
-example: [docs/demo.md](docs/demo.md). Platform details and troubleshooting:
-[docs/runbook.md](docs/runbook.md). Internal design:
-[docs/design.md](docs/design.md).
+不想分步？`lazy107 everything` 用问答方式把「选入口 → 配环境 → 选资源 → 预览 → 提交」
+一条命令走完，每个决策点都有提示，按回车即用当前值。
 
-## Highlights
+完整分步教程见 [docs/quickstart.md](docs/quickstart.md)，
+端到端实例见 [docs/demo.md](docs/demo.md)，
+内部设计见 [docs/design.md](docs/design.md)。
 
-- **Cluster-only**: runs on the 107 login node / Web Shell. Nothing to install
-  locally — code and data move via git (optional) and the GUI file manager.
-- **Smart defaults**: `torch`/`tensorflow`/`jax` in your dependencies →
-  GPU/4 CPU/16G/2h; otherwise CPU/2 CPU/4G/1h. Override in `107.toml`, via
-  `LAZY107_*` environment variables, or CLI flags.
-- **Code-only projects work**: no dependency files? `env` scans your `.py`
-  imports (torch, numpy, sklearn→scikit-learn, ...), writes them to
-  `requirements.txt`, and installs from there. `env` runs only with `--yes`;
-  `--dry-run` previews everything including the generated manifest.
-- **Reuse environments, skip reinstall**: a plain `lazy107 env` in the
-  terminal lists your existing conda envs; picking one validates it against
-  the project's dependencies (importability probe, plus the CUDA build check
-  for GPU jobs) and pins it as `conda_env` in `107.toml`. Enter installs fresh.
-- **GPU/CUDA integrity, enforced**: `gpu>0` can never silently resolve to a
-  CPU-only build — install-time pinning, post-install build verification,
-  preflight blocking, and a runtime CUDA assertion in the generated script.
-- **All conda, no uv**: environments are `conda create -n <project> python=3.12`
-  + pip installs; batch activation uses the documented
-  `source "$(conda info --base)/etc/profile.d/conda.sh"` pattern.
-- **Deterministic scripts**: `RunPlan` is the single source of truth; every
-  sbatch line is explicit (partition, QoS, account, CPU, mem, GPU, time,
-  `--nodes=1`, logs).
-- **Per-user discovery**: `lazy107 discover` resolves the account/partition/
-  QoS your Slurm account is actually allowed to use (verified via
-  `sacctmgr`/`scontrol`) into `~/.config/lazy107/config.toml` — no more
-  "Invalid account or account/partition combination" surprises at submit
-  time.
-- **Safe by design**: `--dry-run` never writes or submits; `transfer` only
-  *prints* a GUI upload checklist (tar → upload → extract → sha256) — no
-  rclone, no Pan, no automation of destructive operations.
-- **Provenance**: every successful submit is appended to `notes/runs.md`
-  (job ID + effective parameters) and every command run inside the project
-  is appended to `notes/history.md` (so you can always see what you already
-  did; `lazy107 check` shows the count and latest) — git stays optional.
+## 主要功能
 
-## Installation (cluster side)
+- **零配置上手**：`discover` 查询 `sacctmgr`/`scontrol`，把你有权使用的
+  account/partition/QoS 写入 `~/.config/lazy107/config.toml`，提交不再报
+  "Invalid account or account/partition combination"。
+- **从代码推断资源**：依赖里出现 torch/jax/tensorflow → 自动升级为
+  GPU 档（1 GPU/4 CPU/16G/2h）；否则 CPU 档（2 CPU/4G/1h）。
+  没有依赖文件也没关系——`env` 会扫描 `.py` 的 import，写出
+  `requirements.txt` 再安装（`sklearn`→`scikit-learn` 这类名不副实的包已内置映射）。
+- **环境复用优先**：终端里直接运行 `lazy107 env`，它会列出你已有的 conda
+  环境，逐个校验「项目 import 的包是否都能找到、GPU 作业的 torch 是否是
+  CUDA 版」，选一个就直接复用，不重装。
+- **GPU 即 CUDA，四道防线**：安装时锁定 CUDA 版 wheel → 装完校验
+  `torch.version.cuda` → 提交前拦截 CPU-only 构建 → 生成的脚本里带运行时
+  CUDA 断言。任何一条被破坏，作业都会响亮地失败，而不是悄悄在 CPU 上跑。
+- **确定性脚本生成**：`plan` 是唯一事实来源；同一份配置永远渲染出同一份
+  sbatch。检测到 DDP 代码自动切换 `torchrun --standalone
+  --nproc_per_node=$SLURM_GPUS_ON_NODE` 启动；多节点 DDP、作业数组
+  （`--array`，每个任务独立日志）自动生成。
+- **失败自动诊断**：`debug` 基于两层证据——sacct 退出码语义
+  （`0:9` OOM、`0:15` 超时）和从真实 107 日志里采来的失败签名
+  （缺模块、缺数据、超时行、CUDA OOM……），按「最具体优先」匹配，输出
+  cause/fix/evidence 三行。
+- **安全边界**：`--dry-run` 只打印、绝不写文件；提交前必须确认（`--yes`
+  跳过）；`transfer` 只打印 GUI 上传清单，从不替你传文件或删文件；
+  登录节点只做管理，训练永远走 `sbatch`。
+- **全程记账**：每次提交追加到 `notes/runs.md`（作业号 + 生效参数），
+  项目内每条命令追加到 `notes/history.md`；`lazy107 check` 随时告诉你
+  当前进度和下一步该做什么。
 
-lazy107 is a plain Python package with zero runtime dependencies.
+## 安装
 
-```bash
-# from a source checkout
-pip install -e .
+lazy107 是零运行时依赖的纯 Python 包（Python ≥ 3.11），只装在**登录节点**上。
+下面两条获取源码的方式任选其一；安装目标为登录节点上任一 Python ≥ 3.11 环境
+（建议先 `conda activate` 常驻环境，或新建 `conda create -n lazy107 python=3.11`）。
 
-# or from a built wheel
-pip install lazy107-*.whl
-```
-
-Verify:
+**方式一：GitHub 克隆（推荐，跟随最新版本）**
 
 ```bash
+git clone https://github.com/snafu615/lazy107.git && cd lazy107
+python -m pip install -e .            # 开发安装，改源码即生效
 lazy107 --version
 ```
 
-## Subcommands
+**方式二：tar 发布包（离线友好）**
 
-| Command | Purpose |
+把 `lazy107-0.1.0.tar.gz`（发布附件）上传到登录节点后解包：
+
+```bash
+tar -xzf lazy107-0.1.0.tar.gz && cd lazy107
+python -m pip install -e .            # 开发安装
+# 完全离线时（无法联网拉取构建工具），改用压缩包内自带的 wheel：
+python -m pip install dist/lazy107-0.1.0-py3-none-any.whl
+```
+
+验证：
+
+```bash
+lazy107 --version
+lazy107 --help    # 列出全部 14 个子命令
+```
+
+## 卸载（快速）
+
+在装有 lazy107 的环境里执行（先 `conda activate` 该环境）：
+
+```bash
+python -m pip uninstall -y lazy107    # 移除包与 lazy107 命令
+rm -rf ~/.config/lazy107              # 用户级配置（discover 写入）
+conda env remove -n lazy107 -y        # 若建过同名专用环境
+rm -rf ~/.lazy107                     # 若用 venv 方式（--prefix）装过
+```
+
+克隆/解包出来的 `lazy107/` 源码目录按需删除；项目里的 `107.toml`、
+`notes/`、`logs/`、`outputs/` 是项目数据而非工具本身，按需保留。
+
+## 命令一览
+
+| 命令 | 作用 |
 |---|---|
-| `lazy107 init <name>` | Scaffold a new project from the bundled template |
-| `lazy107 plan [--entry] [--array]` | Print the resolved run plan; asks which entry when several exist and pins the choice in `107.toml` |
-| `lazy107 render [--entry] [--array] [--dry-run]` | Write (or print) `scripts/<entry>.sbatch` |
-| `lazy107 env [--name] [--entry] [--dry-run] [--yes]` | Print/run conda env preparation with GPU pinning; interactively offers reuse of an existing validated env |
-| `lazy107 submit [--entry] [--array] [--dry-run] [--skip-check] [--yes]` | Validate → preflight → render → confirm → submit → record |
-| `lazy107 watch <job_id> [--job-name]` | Print monitoring commands (squeue/scontrol/tail) |
-| `lazy107 status [job_id]` | Print queue status commands |
-| `lazy107 logs <job_id> [--job-name]` | Print the tail commands (stdout + stderr logs) |
-| `lazy107 debug <job_id> [--job-name]` | Diagnose a failed job: sacct exit code + log signatures → cause/fix |
-| `lazy107 transfer` | Print the large-file GUI upload checklist |
-| `lazy107 discover [--dry-run]` | Resolve your account/partition/QoS and write the per-user global config |
-| `lazy107 config [--init]` | Show the effective config, or write a `107.toml` |
-| `lazy107 check` | Show workflow status (entry/env/runs) and the next step |
-| `lazy107 everything [--entry] [--yes]` | Guided end-to-end: entry → env (reuse or install) → Slurm presets (or per-field edit) → plan → optional preview → submit |
+| `lazy107 init <name>` | 用内置模板脚手架一个新项目 |
+| `lazy107 plan [--entry] [--array]` | 打印解析后的运行计划；入口文件有多个时交互选择并固定到 `107.toml` |
+| `lazy107 render [--entry] [--array] [--dry-run]` | 写出（或打印）`scripts/<入口>.sbatch` |
+| `lazy107 env [--name] [--entry] [--dry-run] [--yes]` | 打印/执行 conda 环境准备；交互模式下优先复用已有环境 |
+| `lazy107 submit [--entry] [--array] [--dry-run] [--skip-check] [--yes]` | 校验 → 预检 → 渲染 → 确认 → 提交 → 记账 |
+| `lazy107 watch <job_id> [--job-name]` | 打印监控命令（scontrol/squeue/tail） |
+| `lazy107 status [job_id]` | 打印队列状态命令 |
+| `lazy107 logs <job_id> [--job-name]` | 打印查看 stdout + stderr 日志的命令 |
+| `lazy107 debug <job_id> [--job-name]` | 诊断失败作业：sacct 退出码 + 日志签名 → 原因/修法 |
+| `lazy107 transfer` | 打印大文件 GUI 上传清单（只打印，不执行） |
+| `lazy107 discover [--dry-run]` | 解析你有权使用的 account/partition/QoS 并写入用户级配置 |
+| `lazy107 config [--init]` | 查看生效配置，或写出 `107.toml` |
+| `lazy107 check` | 显示工作流状态（入口/环境/记录）与下一步 |
+| `lazy107 everything [--entry] [--yes]` | 问答式一键全流程：入口 → 环境 → 资源预设 → 预览 → 提交 |
 
-Workflow guards: `submit` blocks loudly when `conda_env` is configured but the
-env was never created, and warns about skipped steps (no env wired, `watch`
-before submit, unknown job ids).
+## 配置
 
-## Configuration
+五层合并，**后者覆盖前者**：
 
-Four layers, later wins:
+```text
+工具默认值 < 依赖推断 < ~/.config/lazy107/config.toml（discover 写入）
+           < 项目 107.toml < LAZY107_* 环境变量 < 命令行参数
+```
 
-1. **Tool defaults + dependency inference** (GPU/CPU resources from
-   `pyproject.toml` / `requirements.txt` / `environment.yml`)
-2. **Per-user global config** `~/.config/lazy107/config.toml` (written by
-   `lazy107 discover`; holds `account`/`partition`/`qos`)
-3. **Project `107.toml`** (flat keys or a `[run]` section; create with
-   `lazy107 config --init`)
-4. **`LAZY107_*` environment variables and CLI flags**
+项目级 `107.toml`（任何字段都可以省略；`lazy107 config --init` 生成完整模板）：
 
 ```toml
-account = ""              # empty → Slurm default account
-partition = "Students"
+entry = ""              # 入口文件（留空 = 自动检测 train.py > main.py > 其他 .py）
+partition = "Students"  # discover 后由全局配置覆盖为你的分区
 qos = "qos_stu_default"
+account = ""            # 留空 = Slurm 默认账户；非空才渲染 --account 行
 cpus = 4
 mem = "16G"
 gpu = 1
-nodes = 1          # >1 → multi-node allocation
-ntasks = 1         # multi-node DDP: must equal nodes
+nodes = 1               # >1 → 多节点分配
+ntasks = 1              # 多节点 DDP 时必须等于 nodes
 time = "2:00:00"
 log_dir = "logs"
-conda_env = "my-project"
-job_name = ""
-command = ""        # set → launch verbatim instead of python/torchrun
-array = ""          # set → Slurm job array, e.g. 1-5%2 or 0,2,4
+conda_env = "my-project"  # 作业脚本会 conda activate 它
+job_name = ""             # 留空 = 入口文件名
+command = ""              # 设置后按原样执行（取代 python/torchrun）
+array = ""                # 设置后变成作业数组，如 "1-5%2" 或 "0,2,4"
 ```
 
-`lazy107 plan` asks which entry to use when the project has several `.py`
-files (Enter takes the `train.py` recommendation) and pins the choice as
-`entry` here, so every later command honors it. Edit any value directly in
-the file — open the project folder in the Web Shell GUI (Files) or any
-terminal editor — then run `lazy107 plan` again to see the effect.
+改完 `107.toml` 再跑一次 `lazy107 plan` 即可看到效果——每个命令的输出末尾都会
+提示你「要改的值都在这一个文件里」。
 
-## Resource presets (wizard)
+## 文档导航
 
-`lazy107 everything` offers named Slurm resource presets instead of a
-measurement step: `cpu-light` (the CPU default), `cpu-heavy`, `gpu-light`
-(the GPU default), `gpu-heavy`, and `gpu-multi` (2 GPUs). Enter keeps the
-plan's current values; picking a preset wires all four keys (`gpu`/`cpus`/
-`mem`/`time`) into `107.toml` at once; `c` falls through to the per-field
-prompts (each printed with common-value hints). Values equal to the current
-plan are dropped, so nothing is rewritten pointlessly.
-
-```text
-slurm resources (Enter keeps the current values):
-  1) cpu-light  gpu=0 cpus=2 mem=4G time=1:00:00
-  2) cpu-heavy  gpu=0 cpus=8 mem=32G time=8:00:00
-  3) gpu-light  gpu=1 cpus=4 mem=16G time=2:00:00
-  4) gpu-heavy  gpu=1 cpus=8 mem=64G time=12:00:00
-  5) gpu-multi  gpu=2 cpus=16 mem=64G time=24:00:00
-pick a preset [1-5], c to customize each field: 
-```
-
-Presets are honest starting points, not predictions. Start small, submit,
-and bump on evidence: `lazy107 debug <job_id>` turns an OOM kill
-(`0:9`) into "raise mem" and a timeout (`0:15`) into "raise time" — then
-raise that one value (directly in `107.toml` or through the wizard) and
-resubmit. `lazy107 plan` always shows what will take effect.
-
-
-## Safety boundaries
-
-- **Never train on the login node.** Everything goes through `sbatch`.
-- **`--dry-run` is read-only** — it prints, it never writes or submits.
-- **`transfer` prints commands only** — no automated sync, no deletions.
-- **GPU means CUDA.** A GPU request is verified end-to-end (see
-  [docs/design.md §8](design.md)).
-- **No secrets in files.** No tokens, passwords, or credentials in configs,
-  scripts, logs, or notes.
-
-## Documentation
-
-| Doc | Audience | Contents |
+| 文档 | 读者 | 内容 |
 |---|---|---|
-| [docs/quickstart.md](docs/quickstart.md) | First-time users | 5 minutes from install to first job |
-| [docs/design.md](docs/design.md) | Developers, maintainers | Architecture, CLI, config system, GPU/CUDA integrity, safety |
-| [docs/demo.md](docs/demo.md) | Anyone curious | End-to-end worked example |
-| [docs/demos/INDEX.md](docs/demos/INDEX.md) | Evaluators, first-time users | Six live demo walkthroughs (install, happy path, wizard presets, debug, DDP/arrays, guards) |
-| [docs/runbook.md](docs/runbook.md) | Acceptance testing | Step-by-step, acceptance criteria, common blockers |
+| [intro.md](intro.md) | 评委、任何人 | 作品简介：背景、解决的问题、核心功能、模型与 API 说明、创新点 |
+| [docs/quickstart.md](docs/quickstart.md) | 新用户 | 从安装到第一个作业的分步教程 |
+| [docs/demo.md](docs/demo.md) | 所有人 | 端到端完整实例：ResNet-18/CIFAR-10 真实训练 |
+| [docs/design.md](docs/design.md) | 开发者、评委 | 架构、代码结构、各模块功能、安全边界 |
+| [docs/demos/INDEX.md](docs/demos/INDEX.md) | 评委、新用户 | 六个实机演示（英文，待翻译） |
+| [docs/runbook.md](docs/runbook.md) | 验收测试 | 分步验收清单与常见阻塞（英文，待翻译） |
+| [docs/env-pipeline.md](docs/env-pipeline.md) | 开发者 | 环境流水线详解：分析 → 生成 → 执行 → 消费（英文，待翻译） |
 
-## License
+## 许可
 
-MIT License.
+MIT License。

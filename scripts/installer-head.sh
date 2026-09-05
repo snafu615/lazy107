@@ -12,6 +12,7 @@
 set -euo pipefail
 
 MARKER="__LAZY107_WHEEL_BELOW__"
+SHA="__WHEEL_SHA256__"          # substituted at build time; skipped if still a placeholder
 ENV_NAME="lazy107"
 MODE="auto"
 PY=""
@@ -33,6 +34,17 @@ conda env "lazy107", else a venv at ~/.lazy107. Safe to re-run.'
 
 py_ok() {
     "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
+
+pip_install() {
+    # $1 = python binary; installs $WHEEL, logs everything, returns 0/1
+    local log="$TMP/pip.log"
+    if ! "$1" -m pip install --no-deps "$WHEEL" >"$log" 2>&1; then
+        echo "lazy107 installer: pip install failed - full output:" >&2
+        cat "$log" >&2
+        return 1
+    fi
+    rm -f "$log"
 }
 
 for arg in "$@"; do
@@ -63,8 +75,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 WHEEL="$TMP/lazy107.whl"
 
-# the payload marker is the file's last line; the MARKER= assignment above
-# also contains the string, so take the LAST occurrence
+# extract the wheel appended after the marker line (last occurrence of the
+# marker: the MARKER= assignment above also contains the string)
 line_off="$(grep -aboF "$MARKER" "$0" | tail -n1 | cut -d: -f1)"
 if [[ -z "$line_off" ]]; then
     echo "lazy107 installer: payload marker not found (corrupt file?)" >&2
@@ -72,6 +84,17 @@ if [[ -z "$line_off" ]]; then
 fi
 start=$((line_off + ${#MARKER} + 2))
 tail -c "+$start" "$0" > "$WHEEL"
+
+# verify the payload against the sha256 embedded at build time - catches
+# uploads that were mangled by copy-paste or a text-mode transfer
+if [[ "$SHA" != "__WHEEL_SHA256__" ]]; then
+    got="$(sha256sum "$WHEEL" | awk '{print $1}')"
+    if [[ "$got" != "$SHA" ]]; then
+        echo "lazy107 installer: payload checksum mismatch ($got != $SHA)" >&2
+        echo "  the file was corrupted in transfer - re-upload it (binary mode)" >&2
+        exit 1
+    fi
+fi
 
 AUTO_FALLBACK=0
 if [[ "$MODE" == "auto" ]]; then
@@ -100,17 +123,18 @@ if [[ "$MODE" == "direct" ]]; then
         exit 2
     fi
     echo "lazy107 installer: installing into the environment of $PY"
-    if ! "$PY" -m pip install --no-deps --disable-pip-version-check -q "$WHEEL" 2>"$TMP/pip.err"; then
-        cat "$TMP/pip.err" >&2
+    if ! pip_install "$PY"; then
         if [[ "$AUTO_FALLBACK" == "1" ]]; then
-            echo "lazy107 installer: that python is not writable, using a dedicated environment instead"
+            echo "lazy107 installer: that python is not usable, using a dedicated environment instead"
             if command -v conda >/dev/null 2>&1; then
                 MODE="conda"
             else
                 MODE="venv"
             fi
         else
-            echo "lazy107 installer: install failed (try --env or --prefix)" >&2
+            echo "lazy107 installer: install failed - manual retry:" >&2
+            echo "    $PY -m pip install --no-deps $WHEEL" >&2
+            trap - EXIT
             exit 1
         fi
     else
@@ -118,18 +142,54 @@ if [[ "$MODE" == "direct" ]]; then
     fi
 fi
 
+# conda helpers: env dir from `conda env list`, no reliance on `conda run`
+conda_env_dir() {
+    command -v conda >/dev/null 2>&1 || return 1
+    conda env list 2>/dev/null | awk -v n="$1" '$1 == n {print $NF; exit}'
+}
+conda_base_dir() {
+    command -v conda >/dev/null 2>&1 || return 1
+    conda env list 2>/dev/null | awk '$1 == "base" {print $NF; exit}'
+}
+
 if [[ "$MODE" == "conda" ]]; then
     if ! command -v conda >/dev/null 2>&1; then
         echo "lazy107 installer: conda not found on PATH" >&2
         exit 1
     fi
-    if ! conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
-        echo "lazy107 installer: creating conda env '$ENV_NAME' (python 3.11)..."
-        conda create -y -n "$ENV_NAME" python=3.11 -q
+    if [[ -z "$(conda_env_dir "$ENV_NAME")" ]]; then
+        echo "lazy107 installer: creating conda env '$ENV_NAME' (python 3.11 + pip)..."
+        conda create -y -n "$ENV_NAME" python=3.11 pip -q
+    fi
+    ENVDIR="$(conda_env_dir "$ENV_NAME")"
+    if [[ -z "$ENVDIR" || ! -x "$ENVDIR/bin/python" ]]; then
+        echo "lazy107 installer: env '$ENV_NAME' exists but is broken at $ENVDIR" >&2
+        echo "  fix: conda env remove -n $ENV_NAME, then re-run this installer" >&2
+        exit 1
+    fi
+    PY="$ENVDIR/bin/python"
+    if ! py_ok "$PY"; then
+        echo "lazy107 installer: conda env '$ENV_NAME' has an unsupported python ($("$PY" --version 2>&1))" >&2
+        echo "  fix: conda env remove -n $ENV_NAME, then re-run this installer" >&2
+        exit 1
+    fi
+    if ! "$PY" -m pip --version >/dev/null 2>&1; then
+        echo "lazy107 installer: pip missing in '$ENV_NAME', bootstrapping with ensurepip..."
+        "$PY" -m ensurepip --upgrade >"$TMP/ensurepip.log" 2>&1 || {
+            cat "$TMP/ensurepip.log" >&2
+            echo "lazy107 installer: could not bootstrap pip; fix: conda install -n $ENV_NAME pip" >&2
+            exit 1
+        }
     fi
     echo "lazy107 installer: installing into conda env '$ENV_NAME'"
-    conda run -n "$ENV_NAME" python -m pip install --no-deps --disable-pip-version-check -q "$WHEEL"
-    BIN="$(conda run -n "$ENV_NAME" python -c 'import os, sys; print(os.path.join(os.path.dirname(sys.executable), "lazy107"))')"
+    if ! pip_install "$PY"; then
+        echo "lazy107 installer: manual retry (the wheel is kept for you):" >&2
+        cp "$WHEEL" "$HOME/lazy107-0.1.0-py3-none-any.whl"
+        echo "    $PY -m pip install --no-deps $HOME/lazy107-0.1.0-py3-none-any.whl" >&2
+        trap - EXIT
+        exit 1
+    fi
+    BIN="$ENVDIR/bin/lazy107"
     ACTIVATE="conda activate $ENV_NAME"
 fi
 
@@ -140,6 +200,8 @@ if [[ "$MODE" == "venv" ]]; then
         BASE="$CONDA_PREFIX/bin/python"
     elif command -v python3 >/dev/null 2>&1; then
         BASE="$(command -v python3)"
+    elif [[ -n "$(conda_base_dir)" ]] && [[ -x "$(conda_base_dir)/bin/python" ]]; then
+        BASE="$(conda_base_dir)/bin/python"
     fi
     if [[ -z "$BASE" ]] || ! py_ok "$BASE"; then
         echo "lazy107 installer: no python >= 3.11 available to create a venv (use --env with conda)" >&2
@@ -149,8 +211,20 @@ if [[ "$MODE" == "venv" ]]; then
         echo "lazy107 installer: creating venv at $PREFIX"
         "$BASE" -m venv "$PREFIX"
     fi
+    PY="$PREFIX/bin/python"
+    if ! py_ok "$PY"; then
+        echo "lazy107 installer: existing venv at $PREFIX has an unsupported python" >&2
+        echo "  fix: rm -rf $PREFIX, then re-run this installer" >&2
+        exit 1
+    fi
     echo "lazy107 installer: installing into venv at $PREFIX"
-    "$PREFIX/bin/python" -m pip install --no-deps --disable-pip-version-check -q "$WHEEL"
+    if ! pip_install "$PY"; then
+        echo "lazy107 installer: manual retry (the wheel is kept for you):" >&2
+        cp "$WHEEL" "$HOME/lazy107-0.1.0-py3-none-any.whl"
+        echo "    $PY -m pip install --no-deps $HOME/lazy107-0.1.0-py3-none-any.whl" >&2
+        trap - EXIT
+        exit 1
+    fi
     BIN="$PREFIX/bin/lazy107"
     ACTIVATE="export PATH=$PREFIX/bin:\$PATH"
 fi
