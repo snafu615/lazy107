@@ -53,12 +53,6 @@ lazy107 --version
 # -> lazy107 0.1.0
 ```
 
-完全离线时（无法联网拉取构建工具 hatchling），改用压缩包内自带的 wheel：
-
-```bash
-python -m pip install dist/lazy107-0.1.0-py3-none-any.whl
-```
-
 ### 一次性平台配置
 
 ```bash

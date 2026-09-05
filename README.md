@@ -92,15 +92,13 @@ python -m pip install -e .            # 开发安装，改源码即生效
 lazy107 --version
 ```
 
-**方式二：tar 发布包（离线友好）**
+**方式二：tar 发布包**
 
 把 `lazy107-0.1.0.tar.gz`（发布附件）上传到登录节点后解包：
 
 ```bash
 tar -xzf lazy107-0.1.0.tar.gz && cd lazy107
 python -m pip install -e .            # 开发安装
-# 完全离线时（无法联网拉取构建工具），改用压缩包内自带的 wheel：
-python -m pip install dist/lazy107-0.1.0-py3-none-any.whl
 ```
 
 验证：
@@ -179,7 +177,7 @@ array = ""                # 设置后变成作业数组，如 "1-5%2" 或 "0,2,4
 
 | 文档 | 读者 | 内容 |
 |---|---|---|
-| [intro.md](intro.md) | 评委、任何人 | 作品简介：背景、解决的问题、核心功能、模型与 API 说明、创新点 |
+| [intro.md](intro.md) | 评委、任何人 | 作品简介：背景、解决的问题、核心功能、运行形态、创新点 |
 | [docs/quickstart.md](docs/quickstart.md) | 新用户 | 从安装到第一个作业的分步教程 |
 | [docs/demo.md](docs/demo.md) | 所有人 | 端到端完整实例：ResNet-18/CIFAR-10 真实训练 |
 | [docs/design.md](docs/design.md) | 开发者、评委 | 架构、代码结构、各模块功能、安全边界 |
